@@ -1,7 +1,21 @@
 bbmon
 ==
 
-web app monitoring automation
+if the `gh` config [mnt/gh_hosts.yml](mnt/gh_hosts.yml) is present when the container starts it will look for a repository named `bbmon_data` under the current user and create it if it doesn't exist, after that a cronjob will be created that will run every midnight and clone each branch of that repository to the directory `/mnt/data/<branch>/` and update the monitoring cronjobs according to the schedule field in the `bbmon.yml` config file.
+
+the `Jitter` field at the top of the `bbmon.yml` adds a random sleep after the cronjob is triggered and before the actual monitoring starts.
+
+when a monitoring job starts all targets configured in the `bbmon.yml` config are monitored sequentially.
+
+the `Pages` targets contain a list of urls that are navigated to directly using chrome and a HAR file is dumped in the repository for each url, then the responses are extracted and filterd using a list of `jq` select statements (`Selectors` field in `bbmon.yml`) that are OR'd together.
+
+The `Custom` config contains an html page that gets dumped to a temporary file and navigated to using chrome with the `file://` scheme, all generated trafic is extracted.
+
+after extracting responses from the HAR file the filenames of each extracted response are passed to the standard input of the commands in the `Matchers` field and the output of the command is passed to md5sum and compared against the output of the last execution, if they differ a notification is sent using notify.
+
+the commands in the `PostProcessing` field are executed after change detection and before pushing to the appropriate branch of the `bbmon_data` repository.
+
+chrome is controlled using puppeteer with the extra stealth plugin and passed the `--disable-web-security` argument that disables CORS.
 
 **Example Configuration**
 ```yaml
@@ -67,19 +81,6 @@ Targets:
       xargs -I % cat %
 ```
 
-if a github token is configured in [mnt/gh_hosts.yml](mnt/gh_hosts.yml) when the container starts it will look for a repository named `bbmon_data` under the current user and create it if it doesn't exist, after that a cronjob will be created that will run every midnight and clone each branch of that repository to the directory `/mnt/data/<branch>/` and update the monitoring cronjobs according to the schedule field in the `bbmon.yml` config file.
-
-the `Jitter` field at the top of the `bbmon.yml` adds a random sleep after the cronjob is triggered and before the actual monitoring starts.
-
-when a monitoring job starts all targets configured in the `bbmon.yml` config are monitored sequentially.
-
-the `Pages` targets contain a list of urls that are navigated to directly using chrome and a HAR file is dumped in the repository for each url, then the responses are extracted and filterd using a list of `jq` select statements (`Selectors` field in `bbmon.yml`) that are OR'd together.
-
-The `Custom` config contains an html page that gets dumped to a temporary file and navigated to using chrome with the `file://` scheme, all generated trafic is extracted.
-
-after extracting responses from the HAR file the filenames of each extracted response are passed to the standard input of the commands in the `Matchers` field and the output of the command is passed to md5sum and compared against the output of the last execution, if they differ a notification is sent using notify and a commit is made and pushed to the appropriate branch of the bbmon_data repository.
-
-chrome is controlled using puppeteer with the extra stealth plugin and passed the `--disable-web-security` argument that disables CORS.
 
 
 ![bbmon_data](img/bbmon_data.png)
