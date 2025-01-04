@@ -1,0 +1,6 @@
+discord:
+  - id: "monitor"
+    discord_channel: "monitor"
+    discord_username: "Spidey Bot"
+    discord_format: "{{data}}"
+    discord_webhook_url: "..."

@@ -1,0 +1,9 @@
+services:
+  bbmon:
+    image: bbmon:latest
+    restart: always
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    volumes:
+      - ./mnt:/mnt
