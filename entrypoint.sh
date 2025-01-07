@@ -13,8 +13,8 @@ if [[ -f /mnt/gh_hosts.yml ]]; then
     sync_configs_from_github.sh
 else
     echo "PATH=$PATH" | crontab -
-    for yaml_file in $(ls /mnt/data/*/bbmon.yml); do
-        (crontab -l; echo "$(yq '.Schedule' $yaml_file) monitor.sh $yaml_file") | crontab -
+    for branch in $(ls /mnt/data/); do
+        (crontab -l; echo "$(yq '.Schedule' /mnt/data/$branch/bbmon.yml) monitor.sh $branch") | crontab -
     done
 fi
 

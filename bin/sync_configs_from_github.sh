@@ -18,5 +18,5 @@ for branch in $(git ls-remote --heads "$repo_url" | cut -d/ -f3); do
         continue
     fi
 
-    (crontab -l; echo "$(yq '.Schedule' /mnt/data/$branch/bbmon.yml) monitor.sh /mnt/data/$branch/bbmon.yml") | crontab -
+    (crontab -l; echo "$(yq '.Schedule' /mnt/data/$branch/bbmon.yml) monitor.sh $branch") | crontab -
 done

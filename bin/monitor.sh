@@ -3,11 +3,27 @@ set -xeu
 
 NOTIFY_CONFIG='/mnt/notify-config.yaml'
 IFS=$'\n'
+CS_INJECTOR_MANIFEST=$(cat <<EOF
+{
+    "manifest_version": 3,
+    "name": "content-script-injector",
+    "content_scripts": [
+        {
+            "matches": ["<all_urls>"],
+            "all_frames": true,
+            "js": ["content_script.js"]
+        }
+    ],
+    "host_permissions":[ "*://*/*" ]
+}
+EOF
+)
 
 function extract_har() {
-    har_file="$1"
-    name="$2"
-    [[ -z "$3" ]] && selectors="." || selectors="$3"
+    name="$1"
+    har_file="$2"
+    selectors=$(yq '.Targets[] | select(.Name == "'$name'" and .Selectors != null) | .Selectors' "$config_file")
+    [[ -z "$selectors" ]] && selectors="."
 
     tmp_file=$(mktemp -p $tmpdir)
     for selector in $selectors; do 
@@ -33,75 +49,45 @@ function extract_har() {
     done
 }
 
-function monitor_page() {
+function monitor() {
     name="$1"
-    pages=$(yq '.Targets[] | select(.Name == "'$name'") | .Pages' "$config_file")
-    selectors="$(yq '.Targets[] | select(.Name == "'$name'" and .Selectors != null) | .Selectors' "$config_file")"
-    matchers=$(yq '.Targets[] | select(.Name == "'$name'") | .Matchers' "$config_file")
-    extra_headers="$(yq '.Targets[] | select(.Name == "'$name'" and .ExtraHeaders != null) | .ExtraHeaders' "$config_file")"
-    post_processing="$(yq '.Targets[] | select(.Name == "'$name'" and .PostProcessing != null) | .PostProcessing' "$config_file")"
+    config=$(yq '.Targets[] | select(.Name == "'$name'")' "$config_file")
     mkdir -p "$name" 2>/dev/null
 
-    headers=()
-    for header in $extra_headers; do 
-        headers+=("-H" "$header") 
+    args=()
+    for header in $(yq 'select(.ExtraHeaders != null) | .ExtraHeaders' <<< $config); do 
+        args+=("-H" "$header") 
     done
+
+    if [[ $(yq 'select(.ContentScript != null)' <<< $config) != "" ]]; then
+        echo "$CS_INJECTOR_MANIFEST" >$tmpdir/manifest.json
+        yq '.ContentScript' <<< $config >$tmpdir/content_script.js
+        args+=("-A" "--load-extension=$tmpdir")
+    fi
 
     find "$name/" -not -name 'matchers.txt' -type f -exec rm -rf -- {} \;
 
-    for page in $pages; do 
-        har_file="${name}/$(echo $(echo $page | head -c 249).har | tr '/\\' '_')"
-        stealthy-har-capturer -A "--disable-web-security" ${headers[@]} -t 20000 -g 6000 -o "$har_file" "$page" || return 0
-        extract_har "$har_file" "$name" "$selectors"
-    done
+    if [[ $(yq 'select(.Pages != null)' <<< $config) != "" ]]; then
+        for page in $(yq '.Pages' <<< $config); do
+            har_file="${name}/$(echo $(echo $page | head -c 249).har | tr '/\\' '_')"
+            stealthy-har-capturer ${args[@]} -A "-disable-popup-blocking" -t 20000 -g 12000 -o "$har_file" "$page" || return 0
+            extract_har "$name" "$har_file"
+        done
+    elif [[ $(yq 'select(.Custom != null)' <<< $config) != "" ]]; then
+        tmp_page="$(mktemp -p $tmpdir).html"
+        har_file="${name}/${name}.har"
+        yq '.Custom' <<< $config >$tmp_page
+        stealthy-har-capturer ${args[@]} -A "--disable-web-security" -t 20000 -g 12000 -o "$har_file" "file://$tmp_page" || return 0
+        extract_har "$har_file" "$name" .
+    fi
 
     [[ -f "$name/matchers.txt" ]] && prev_checksum=$(md5sum "$name/matchers.txt" | cut -d ' ' -f1) || prev_checksum=""
-    for matcher in $matchers; do
+    for matcher in $(yq '.Matchers' <<< $config); do
         eval "find '$name' -mindepth 2 -type f | grep -v '/cdn-cgi/' | $matcher >> $name/matchers.txt"
     done
     checksum=$(md5sum "$name/matchers.txt" | cut -d ' ' -f1)
-    
-    for processing in $post_processing; do
-        eval "find '$name/' -mindepth 2 -type f | $processing" || true
-    done
 
-    if [[ -n "$prev_checksum" && "$checksum" != "$prev_checksum" ]]; then
-        git add .
-        printf "change detected at $name\n$(git status --short $name/*/ | sed "s,$name/,,")" | 
-            notify -bulk -silent -provider-config "$NOTIFY_CONFIG" -id monitor
-        git commit -m "change detected at $name"
-        gh auth status && git push
-    fi
-}
-
-function monitor_custom() {
-    name="$1"
-    matchers=$(yq '.Targets[] | select(.Name == "'$name'") | .Matchers' "$config_file")
-    extra_headers="$(yq '.Targets[] | select(.Name == "'$name'" and .ExtraHeaders != null) | .ExtraHeaders' "$config_file")"
-    post_processing="$(yq '.Targets[] | select(.Name == "'$name'" and .PostProcessing != null) | .PostProcessing' "$config_file")"
-    mkdir -p "$name" 2>/dev/null
-
-    headers=()
-    for header in $extra_headers; do 
-        headers+=("-H" "$header") 
-    done
-
-    find "$name/" -not -name 'matchers.txt' -type f -exec rm -rf -- {} \;
-
-    tmp_page="$(mktemp -p $tmpdir).html"
-    yq '.Targets[] | select(.Name == "'$name'") | .Custom' "$config_file" > $tmp_page
-
-    har_file="${name}/${name}.har"
-    stealthy-har-capturer -A "--disable-web-security" ${headers[@]} -t 20000 -g 6000 -o "$har_file" "file://$tmp_page" || return 0
-    extract_har "$har_file" "$name" .
-
-    [[ -f "$name/matchers.txt" ]] && prev_checksum=$(md5sum "$name/matchers.txt" | cut -d ' ' -f1) || prev_checksum=""
-    for matcher in $matchers; do
-        eval "find '$name/' -mindepth 2 -type f | $matcher >> $name/matchers.txt"
-    done
-    checksum=$(md5sum "$name/matchers.txt" | cut -d ' ' -f1)
-
-    for processing in $post_processing; do
+    for processing in $(yq 'select(.PostProcessing != null) | .PostProcessing' <<< $config); do
         eval "find '$name/' -mindepth 2 -type f | $processing" || true
     done
 
@@ -115,12 +101,12 @@ function monitor_custom() {
 }
 
 if [[ $# -lt 1 ]]; then
-    echo "$0 <config_file>"
+    echo "$0 <target>"
     exit 1
 fi
 
-config_file="$(realpath $1)"
-cd "$(dirname $config_file)"
+config_file="/mnt/data/$1/bbmon.yml"
+cd "/mnt/data/$1/"
 
 exec > >(tee "monitor.log") 2>&1
 
@@ -136,10 +122,6 @@ echo "Starting at $(date)"
 tmpdir=$(mktemp -d -p /tmp bbmon-XXXX)
 trap "rm -rf $tmpdir" EXIT
 
-for name in $(yq '.Targets[] | select(.Pages != null) | .Name' "$config_file"); do
-    monitor_page "$name"
-done
-
-for name in $(yq '.Targets[] | select(.Custom != null) | .Name' "$config_file"); do
-    monitor_custom "$name"
+for name in $(yq '.Targets[] | .Name' "$config_file"); do
+    monitor "$name"
 done

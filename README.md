@@ -7,31 +7,23 @@ the `Jitter` field at the top of the `bbmon.yml` adds a random sleep after the c
 
 when a monitoring job starts all targets configured in the `bbmon.yml` config are monitored sequentially.
 
-the `Pages` targets contain a list of urls that are navigated to directly using chrome and a HAR file is dumped in the repository for each url, then the responses are extracted and filterd using a list of `jq` select statements (`Selectors` field in `bbmon.yml`) that are OR'd together.
+the `Pages` targets contain a list of urls that are navigated to directly using chrome and a HAR file is dumped in the repository for each url.
 
-The `Custom` config contains an html page that gets dumped to a temporary file and navigated to using chrome with the `file://` scheme, all generated trafic is extracted.
+The `Custom` config contains an html page that gets dumped to a temporary file and navigated to using chrome with the `file://` scheme.
 
-after extracting responses from the HAR file the filenames of each extracted response are passed to the standard input of the commands in the `Matchers` field and the output of the command is passed to md5sum and compared against the output of the last execution, if they differ a notification is sent using notify.
+a content script can be injected into all origins  byusing the `ContentScript` field, that way simple authentication can be implemented.
+
+after the navigation has occured responses are extracted out of the HAR file and can be selectivly matched using a list of `jq` select statements (`Selectors` field in `bbmon.yml`) that are OR'd together.
+
+after extracting responses the filenames of each extracted response are passed to the standard input of the commands in the `Matchers` field and the output of the command is passed to md5sum and compared against the output of the last execution, if they differ a notification is sent using notify.
 
 the commands in the `PostProcessing` field are executed after change detection and before pushing to the appropriate branch of the `bbmon_data` repository.
-
-chrome is controlled using puppeteer with the extra stealth plugin and passed the `--disable-web-security` argument that disables CORS.
 
 **Example Configuration**
 ```yaml
 Schedule: 43 10 * * *
 Jitter: 117 minutes
 Targets:
-  - Name: Skroutz
-    Pages: |
-      https://www.skroutz.gr/
-      https://www.skroutz.gr/sign_in
-      https://www.skroutz.gr/plus
-      https://www.skroutz.gr/shop
-    Selectors: select(._resourceType == "script")
-    Matchers: |
-      xargs -I % cat % | grep -oP '\.(get|post|patch|put)\([^\)]{2,}\)'
-
   - Name: EpicGames_Release_Notes
     Pages: |
       https://dev.epicgames.com/docs/epic-online-services/release-notes
@@ -79,9 +71,26 @@ Targets:
       </html>
     Matchers: |
       xargs -I % cat %
+
+  - Name: Example_Authenticated
+    Pages: https://www.example.com/id/login
+    ContentScript: |
+      onload = () => {
+        if (origin !== 'https://www.example.com') return;
+        if (!localStorage.getItem('authenticated')) {
+          localStorage.setItem('authenticated', 'true')
+          document.document.querySelector('input[type=email]').value = "user@mail.com";
+          document.document.querySelector('input[type=password]').value = "Password1!";
+          document.forms[0].submit()
+        } else {
+          window.open('https://www.example.com/account/personal')
+          window.open('https://www.example.com/account/payments')
+        }
+      }
+    Selectors: select(.request.url | contains("epicgames.com/")) | select(._resourceType == "script")
+    Matchers: xargs -I % cat %
+    PostProcessing: pprettier --write **/*.js
 ```
-
-
 
 ![bbmon_data](img/bbmon_data.png)
 
